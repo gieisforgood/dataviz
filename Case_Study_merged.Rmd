@@ -1,0 +1,348 @@
+---
+title: "Data Analysis and Visualization in R (IN2339)"
+subtitle: "Case Study"
+author: "[Dejvi Zelo, Caterina Köhl, Nicolas Bodman, Angelin Panjaitan]"
+date: "`r Sys.Date()`"
+output:
+  html_document: 
+    fig_caption: yes
+  pdf_document: 
+    fig_caption: yes
+---
+
+```{r, setup, include=FALSE}
+# Set up root directory for all notebook chunks
+knitr::opts_knit$set(root.dir = '/Users/angiepanjaitan/Desktop/WS21:22/Data Analysis and Visualization in R/Case Study - The City of Barcelona-20211117/data')
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+## Load all the needed libraries. No need to include this in your compiled pdf document so we set echo=FALSE
+
+library(ggplot2)
+library(data.table)
+library(magrittr)
+library(tidyr)
+library(stringr)
+```
+
+## Motivation
+
+From 2015-2017, there is a prominent decrease in the number of unemployment in Barcelona. At the same time, the average rent prices shows a significant rise. The goal of this case study is to analyze the relationship between the number of unemployment and the rent prices in Barcelona. In the following, the rent prices will always be the prices per $m^2$ and unemployed people refers to people which are registered as unemployed or are on demand for unemployment.
+
+## Data Preparation
+
+In this section, we perform the needed data preparation steps needed for the analysis. Unnecessary chunk codes are omitted in the compiled pdf-file. 
+
+For the analysis, we used the given dataset from Kaggle containing the monthly number of unemployed people per neighborhood for the years 2013 - 2017:
+
+- unemployment.csv
+
+Also three additional datasets will be considered, which can be found [here](https://opendata-ajuntament.barcelona.cat/data/en/dataset/est-mercat-immobiliari-lloguer-mitja-mensual). The datasets contain the price of the rent per $m^2$ and the monthly average rent price for each quarter of the years 2015, 2016 and 2017:
+
+- 2015_lloguer_preu_trim.csv
+- 2016_lloguer_preu_trim.csv
+- 2017_lloguer_preu_trim.csv
+
+We need to make a little remark here. There is a mistake in the original rent dataset as they have a column for "Trimestre" (Catalan for trimester) data. But in fact the year is split into four parts as the column contains the values 1, 2, 3, 4. Therefore the column "Trimestre" actually describes the quarter of the year of the observation. This is also stated [here](https://opendata-ajuntament.barcelona.cat/data/en/dataset/est-mercat-immobiliari-lloguer-mitja-mensual) on the homepage at the bottom in the table "Additional Info" in the field "Update frequency: Quarterly". We had to rename the column "Trimestre" to "Quarter".
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+## This chunk of code and output do not need to be included in the pdf document so we set echo=FALSE and results='hide'
+
+# Load datasets
+
+## load population data set
+## showing population of Barcelona's districts
+
+population <- fread("population.csv", encoding="UTF-8")
+colnames(population) <- c("Year","District_Code","District_Name","Neighborhood_Code",
+                             "Neighborhood_Name","Gender","Age","Population")
+
+ aggregated_population <- aggregate(Population ~ Year + District_Code + District_Name + Neighborhood_Code, population, FUN = sum)
+ aggregated_population <- as.data.table(aggregated_population)
+ aggregated_population <- aggregated_population[Year != 2013 & Year != 2014]
+
+## load average rent data set
+
+average_rent_2015 <- fread("2015_lloguer_preu_trim.csv", encoding="UTF-8")
+average_rent_2016 <- fread("2016_lloguer_preu_trim.csv", encoding="UTF-8")
+average_rent_2017 <- fread("2017_lloguer_preu_trim.csv", encoding="UTF-8")
+
+## load unemployment data set
+
+unemployment <- fread("unemployment.csv", encoding="UTF-8")
+
+
+average_rent_original <- rbindlist(list(average_rent_2015, average_rent_2016, average_rent_2017))
+# remove rows where we do not have any prices given
+average_rent <- na.omit(average_rent_original)
+
+
+# only consider price per m^2
+average_rent_m2 <- average_rent[Lloguer_mitja == "Lloguer mitjà per superfície (Euros/m2 mes)"]
+
+quarter_unemployment_distr <- av_quarter(unemployment, "District_Code")
+slim_average_rent_distr <- average_rent_m2[, c("District_Code", "Price", "Year", "Quarter")]
+
+# we only have rent data for 2015, 2016, 2017
+rent_unemployment_distr <- merge(quarter_unemployment_distr[Year > 2014], slim_average_rent_distr, by=c("District_Code", "Year", "Quarter"))
+rent_unemployment_distr[, District_Code := as.factor(District_Code)]
+rent_unemployment_distr[, Year := as.factor(Year)]
+rent_unemployment_distr <- na.omit(rent_unemployment_distr)
+
+
+# adding district names 
+district_name_dt <- unemployment[District_Code !=99, unique(District_Name), by = "District_Code"]
+colnames(district_name_dt) <- c("District_Code","District_Name")
+district_name_dt$District_Code <- as.factor(district_name_dt$District_Code)
+merged_rent_unemployment <- merge(district_name_dt,rent_unemployment_distr, by = "District_Code")
+
+
+
+## Function for replacing the spacing in the column names
+
+replace_spacings <- function(dt){
+  
+  replace_spacing <- function(col){
+    col <- gsub(" ", "_", col)
+  }
+  underlined_dt <- copy(dt)
+  names(underlined_dt) <- sapply(names(underlined_dt), replace_spacing)
+  return(underlined_dt)
+}
+
+## Function for translation of column names of data table from catalan to english
+# here the mistake in the column name "Trimestre" will be fixed
+
+translate_columns <- function(dt){
+  
+  translate_column <- function(col){
+    if (col == "Nom_Barri"){
+      translated_col <- "Neighborhood_Name"
+    }
+    else if (col == "Preu"){
+      translated_col <- "Rent_Price"
+    }
+    else if (col == "Any"){
+      translated_col <- "Year"
+    }
+    else if (col == "Codi_Barri"){
+      translated_col <- "Neighborhood_Code"
+    }
+    else if (col == "Trimestre"){
+      translated_col <- "Quarter"
+    }
+    else if (col == "Codi_Districte"){
+      translated_col <- "District_Code"
+    }
+    else if (col == "Nom_Districte"){
+      translated_col <- "District_Name"
+    }
+    else if (col == "Edat_quinquennal"){
+      translated_col <- "Age"
+    }
+    else if (col == "Codi_Barri"){
+      translated_col <- "Neighborhood_Code"
+    }
+    else if (col == "Any"){
+      translated_col <- "Year"
+    }
+    else if (col == "Nombre"){
+      translated_col <- "Immigrants"
+    }
+    else{
+      translated_col <- col
+    }
+  }
+  
+  translated_dt <- copy(dt)
+  names(translated_dt) <- sapply(names(translated_dt), translate_column)
+  return(translated_dt)
+}
+
+
+convert_to_quarter <- function(dt, col){
+  # sum up data as we have observations for female/male registered unemployed/unemployed on demand
+  summed_dt <- dt[, .(Unemployment_Number = sum(Unemployment_Number)), by=c("Year", col, "Month")]
+first_quarter <- summed_dt[Month %in% c("January", "February", "March"), .(Unemployment_Number = mean(Unemployment_Number)), by=c(col, "Year")]
+first_quarter[, Quarter := 1]
+second_quarter <- summed_dt[Month %in% c("April", "May", "June"), .(Unemployment_Number = mean(Unemployment_Number)), by=c(col, "Year")]
+second_quarter[, Quarter := 2]
+third_quarter <- summed_dt[Month %in% c("July", "August", "September"), .(Unemployment_Number = mean(Unemployment_Number)), by=c(col, "Year")]
+third_quarter[, Quarter := 3]
+fourth_quarter <- summed_dt[Month %in% c("October", "November", "December"), .(Unemployment_Number = mean(Unemployment_Number)), by=c(col, "Year")]
+fourth_quarter[, Quarter := 4]
+
+converted_dt <- rbindlist(list(first_quarter, second_quarter, third_quarter, fourth_quarter))
+}
+
+# Adapt column names and only consider the years 2015 - 2017 as we only have rent prices from those years.
+average_rent_m2 <- translate_columns(average_rent_m2)
+unemployment_15_16_17 <- replace_spacings(unemployment[Year > 2014])
+
+# add a new column for cleaner naming
+unemployment_15_16_17[, Unemployment_Number := Number] %>% .[Demand_occupation == "Unemployment demand"]
+
+# we will just consider columns, which are interesting for us
+slim_average_rent_nbhd <- average_rent_m2[, c("Neighborhood_Name", "Rent_Price", "Year", "Quarter", "District_Name")]
+slim_unemployment <- unemployment_15_16_17[, c("Neighborhood_Name", "Unemployment_Number", "Year", "Month", "District_Name")]
+
+## Analysis number of unemployment vs rent prices per m^2
+
+# as the rent dataset is split into quarter, we will average the unemployment dataset to get the data per quarter of the year.
+quarter_unemployment_nbhd <- convert_to_quarter(slim_unemployment, "Neighborhood_Name")
+
+# merge unemployment and rent prices datasets
+rent_unemployment_nbhd <- merge(quarter_unemployment_nbhd, slim_average_rent_nbhd, by=c("Neighborhood_Name", "Year", "Quarter"))
+
+# factorize appropriate columns and omit rows with missing unemployment numbers or rent prices
+rent_unemployment_nbhd[, District_Name := as.factor(District_Name)]
+rent_unemployment_nbhd[, Neighborhood_Name := as.factor(Neighborhood_Name)]
+rent_unemployment_nbhd[, Year := as.factor(Year)]
+rent_unemployment_nbhd[, Quarter := as.factor(Quarter)]
+```
+
+## Data Analysis
+
+```{r echo=FALSE, message=FALSE}
+# Fig. 1 : Different population size of districts in Barcelona (in thousands, 2017)
+
+total_population_district <- aggregated_population[Year == 2017, .(Total_Population = sum(Population)/1000), by = "District_Name"]
+total_population_district$District_Name <- factor(total_population_district$District_Name, levels = 
+                                      total_population_district$District_Name[order(total_population_district$Total_Population, decreasing = F)])
+
+
+ggplot(total_population_district, aes(District_Name,Total_Population)) + 
+  geom_col(fill = "DarkBlue", show.legend = T, orientation = "x") +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) + 
+  geom_text(size = 3, aes(label = Total_Population), vjust = -0.5) + 
+  labs(title = "Fig. 1 : Different population size of districts in Barcelona (in thousands, 2017)", x = "District", y = "Inhabitants") + 
+  theme_minimal()
+
+```
+
+
+```{r echo=FALSE, warning=FALSE}
+# Boxplots
+ggplot(merged_rent_unemployment,aes(District_Name, Price))+geom_boxplot() + 
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) + 
+  labs(title = "Different medians of rent prices per sqm for each district", x = "District", y = "Average rent price per sqm [in EUR]") + 
+  theme_minimal()
+
+merged_rent_unemployment[,median(Price, na.rm = T),by=District_Name] #providing concrete numbers for title
+  
+ggplot(merged_rent_unemployment,aes(District_Name, Number))+geom_boxplot() +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) + 
+  labs(title = "Unequal distribution of unemployed among different districts", x = "District", y = "Average number of unemployed per quarter") + theme_minimal()
+
+```
+
+```{r echo=FALSE, warning=FALSE}
+# Histograms
+
+ggplot(merged_rent_unemployment, aes(Price)) + geom_histogram(fill = "DarkBlue") +
+  labs(title = "Average rent price per sqm follows a normal distribution", x = "Average rent price per sqm [in EUR]" ) +theme_minimal()
+
+ggplot(merged_rent_unemployment, aes(Number)) + geom_histogram(fill = "DarkBlue") +
+  labs(title = "Number of unemployed with bi-modal distribution", x = "Average number of unemployed per quarter" ) +theme_minimal()
+  
+```
+
+### Analysis of number of unemployed people and rent prices
+
+The data gives us a total of $825$ data points containing the number of unemployed people and the rent prices per neighborhood.
+Have a look on the number of unemployment versus rent prices:
+
+```{r, echo=FALSE, fig.cap = "Scatterplot of unemployment rate vs average rent price per neighborhood"}
+ggplot(rent_unemployment_nbhd, aes(Unemployment_Number, Rent_Price, color=Year)) + 
+  geom_jitter() +
+  labs(x="Unemployment rate", y=expression(paste("Average rent price per m"^"2"))) +
+  ggtitle(str_wrap("The unemployment rate does not seem to be correlated with the average rent prices", 60))
+```
+
+There does not seem to be a correlation in the data as the data points are randomly scattered in the plot. A statistical correlation test will be used to check if there is a correlation between the number of unemployed people and the rent price to verify the observation.
+To select the appropriate statistical correlation test, we need to check if the data follows a Gaussian distribution. This can be done with a Q-Q plot. The unemployment data is not Gaussian distributed as the tails do not lie on the line:
+
+```{r, echo=FALSE, fig.cap="QQ plot of the unemployment numbers for each neighborhood"}
+ggplot(rent_unemployment_nbhd, aes(sample=Unemployment_Number)) + 
+  geom_qq() + 
+  geom_qq_line() +
+  xlab("Quantiles of the uniform distribution") +
+  ylab("Quantiles of the dataset") +
+  ggtitle(str_wrap("The unemployment numbers are not gaussian distributed", 60))
+```
+
+Also the rent prices are not Gaussian distributed as the tails do not lie on the line:
+
+```{r, echo=FALSE, fig.cap="QQ plot of the average rent prices for each neighborhood"}
+ggplot(rent_unemployment_nbhd, aes(sample=Rent_Price)) + 
+  geom_qq() + 
+  geom_qq_line() +
+  xlab("Quantiles of the uniform distribution") +
+  ylab("Quantiles of the dataset") +
+  ggtitle(str_wrap("The average rent prices are not Gaussian distributed", 60))
+```
+
+As the data is not Gaussian distributed we cannot use the Pearson correlation test. The Spearman's rank correlation test is the appropriate test for the data as it can handle data with unknown distribution.
+The null hypothesis in the Spearman's rank test is that the rank correlation equals to 0 ($\rho = 0$), i.e. there is no correlation in the data.
+Performing the test results in $\rho = -0.018$ indicating almost no correlation at all or a very little negative correlation of the data. As our $p\_value = 0.61 > 0.05$ we fail to reject the null hypothesis $\rho = 0$ with a significance level $\alpha = 0.05$:
+
+```{r echo=FALSE, warning=FALSE}
+cor.test(rent_unemployment_nbhd[, Rent_Price], rent_unemployment_nbhd[, Unemployment_Number], method="spearman")
+```
+We have evidence towards the null hypothesis $\rho = 0$ that suggests us the non-correlation of the whole data.
+This is not a result one would expect. In general, unemployed people have a lower income than employed people and are not able to pay high rents. Therefore one would expect lower unemployment numbers as the rent prices increase.
+
+There might be neighborhoods, which have in general a higher rent price and mixing them up with neighborhoods with lower rent prices would vanish the effect. Hence it is reasonable to look at the data separately for each neighborhood. As some neighborhoods have not enough data points, we will from now on only consider neighborhoods with more than eight data points. That is 67 neighborhoods instead of 73.
+We can now see a clear negative linear relation in the data:
+
+```{r echo=FALSE, fig.height=25, fig.width=25, fig.cap="Scatterplot of unemployment numbers vs average rent prices for every neighborhood"}
+interesting_nbhds <- rent_unemployment_nbhd[, .(total = .N), by = Neighborhood_Name] %>% .[total > 8] %>% .[, unique(Neighborhood_Name)]
+interesting_obs <- rent_unemployment_nbhd[Neighborhood_Name %in% interesting_nbhds]
+ggplot(interesting_obs, aes(Unemployment_Number, Rent_Price, color=Year)) + 
+  geom_jitter() + 
+  facet_wrap(~Neighborhood_Name, ncol=4) +
+  labs(x="Unemployment rate", y=expression(paste("Average rent price per m"^"2"))) +
+  ggtitle("The unemployment rate seems to be correlated with the average rent prices")
+```
+
+We can also observe the trend that each year the number of unemployed people monotonously increase as the data points form an own cloud for each year, indicated by the different colors.
+
+Let's check the observation that there is a negative correlation in the plots by performing a Spearman's rank correlation test for each neighborhood. You can see exemplary test results in the following table:
+
+```{r echo=FALSE, warning=FALSE}
+number_nbhds <- length(interesting_nbhds)
+correlations <- rep(NA, number_nbhds)
+p_vals <- rep(NA, number_nbhds)
+for (i in 1:number_nbhds){
+  n_code <- interesting_nbhds[i]
+  cor_test <- cor.test(
+    interesting_obs[Neighborhood_Name == n_code, Rent_Price],
+    interesting_obs[Neighborhood_Name == n_code, Unemployment_Number],
+    method="spearman"
+  )
+  correlations[i] <- cor_test$estimate
+  p_vals[i] <- cor_test$p.value
+}
+correlations_per_nbhd_dt <- data.table(
+  Neighborhood_Name= interesting_nbhds,
+  Rho=correlations,
+  Pvalue=p_vals
+)
+head(correlations_per_nbhd_dt)
+```
+
+We have 5 neighborhoods where we fail to reject the null hypothesis $\rho = 0$ at a significance level $\alpha = 0.05$. This might happen as we only have 12 data points for each of these neighborhoods. They all have a negative correlation with $\rho \in [-0.58, -0.46]$:
+```{r echo=TRUE}
+correlations_per_nbhd_dt[Pvalue > 0.05]
+```
+In all other 62 neighborhoods, we reject the null hypothesis $\rho = 0$ at a significance level $\alpha = 0.05$. They also all have a high negative correlation with $\rho \in [-0.986, -0.636]$. Exemplary test results can be seen in the following table:
+```{r echo=TRUE}
+head(correlations_per_nbhd_dt[Pvalue <= 0.05])
+```
+
+## Conclusion 
+
+In the unemployment versus rent prices data there is clearly a Simpson's Paradoxon in the majority of the observations. We have evidence towards no correlation in the data as seen in FIGURE 1 (__REFERENCE TO FIRST FIGURE__), which disappears as we resolved for confounding variables, looking at each neighborhood separately. This resulted to rejection of the null hypothesis $\rho = 0$ in $92.5 \%$ of the 67 analyzed neighborhoods, giving evidence towards a high negative correlation between the rent prices and the unemployment numbers in those neighborhoods.
+
